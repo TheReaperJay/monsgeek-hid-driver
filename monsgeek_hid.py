@@ -161,7 +161,16 @@ class MonsGeekHID:
         self.write_buffer = bytearray(EVENT_SIZE * 16)  # Pre-allocate buffer
 
     def find_hidraw(self):
-        for hr in glob.glob("/dev/hidraw*"):
+        """Find the boot keyboard hidraw device (input0) for MonsGeek M5W.
+
+        The keyboard exposes 3 HID interfaces:
+        - input0: Boot keyboard protocol (8-byte reports) - THIS IS WHAT WE WANT
+        - input1: NKRO + consumer/system control
+        - input2: Vendor-specific (RGB, macros)
+
+        We must specifically target input0, not just any matching VID/PID.
+        """
+        for hr in sorted(glob.glob("/dev/hidraw*")):
             try:
                 base = os.path.basename(hr)
                 uevent_path = f"/sys/class/hidraw/{base}/device/uevent"
@@ -170,7 +179,8 @@ class MonsGeekHID:
                         content = f.read()
                     if "3151" in content and "4015" in content:
                         if "2.4G" not in content and "4011" not in content:
-                            return hr
+                            if "/input0" in content:
+                                return hr
             except:
                 pass
         return None
