@@ -152,13 +152,53 @@ def make_key_event(keycode, value):
     return struct.pack(EVENT_FORMAT, 0, 0, EV_KEY, keycode, value)
 
 
+EVIOCGRAB = 0x40044590
+
 class MonsGeekHID:
     def __init__(self):
         self.uinput_fd = None
         self.hidraw_fd = None
+        self.grabbed_fd = None
         self.prev_modifiers = 0
         self.prev_keys = set()
         self.write_buffer = bytearray(EVENT_SIZE * 16)  # Pre-allocate buffer
+
+    def grab_kernel_input(self, hidraw_path):
+        """Grab the kernel's input device to prevent double input."""
+        base = os.path.basename(hidraw_path)
+        device_path = f"/sys/class/hidraw/{base}/device"
+
+        input_dir = os.path.join(device_path, "input")
+        if not os.path.isdir(input_dir):
+            print(f"[WARN] No input dir at {input_dir}")
+            return False
+
+        for input_entry in os.listdir(input_dir):
+            if input_entry.startswith("input"):
+                input_dev_path = os.path.join(input_dir, input_entry)
+                for sub in os.listdir(input_dev_path):
+                    if sub.startswith("event"):
+                        event_dev = f"/dev/input/{sub}"
+                        try:
+                            fd = os.open(event_dev, os.O_RDONLY)
+                            fcntl.ioctl(fd, EVIOCGRAB, 1)
+                            self.grabbed_fd = fd
+                            print(f"[OK] Grabbed {event_dev} (kernel input disabled)")
+                            return True
+                        except OSError as e:
+                            print(f"[WARN] Can't grab {event_dev}: {e}")
+        return False
+
+    def ungrab_kernel_input(self):
+        """Release the grabbed input device."""
+        if self.grabbed_fd is not None:
+            try:
+                fcntl.ioctl(self.grabbed_fd, EVIOCGRAB, 0)
+                os.close(self.grabbed_fd)
+                print("[OK] Released kernel input device")
+            except:
+                pass
+            self.grabbed_fd = None
 
     def find_hidraw(self):
         """Find the boot keyboard hidraw device (input0) for MonsGeek M5W.
@@ -271,6 +311,8 @@ class MonsGeekHID:
             try:
                 self.hidraw_fd = os.open(hr, os.O_RDONLY | os.O_NONBLOCK)
                 print(f"[OK] Connected to {hr}")
+                if not self.grabbed_fd:
+                    self.grab_kernel_input(hr)
                 self.prev_modifiers = 0
                 self.prev_keys = set()
                 return True
@@ -327,6 +369,7 @@ class MonsGeekHID:
             print("\n[!] Shutting down...")
         finally:
             self.disconnect_hidraw()
+            self.ungrab_kernel_input()
             if self.uinput_fd is not None:
                 try:
                     fcntl.ioctl(self.uinput_fd, 0x5502)  # UI_DEV_DESTROY
